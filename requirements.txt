@@ -1,0 +1,6 @@
+# Core dependencies
+pandas>=2.2
+scikit-learn>=1.5
+
+# Testing
+pytest>=8.0
