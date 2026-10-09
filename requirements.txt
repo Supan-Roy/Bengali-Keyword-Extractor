@@ -2,5 +2,16 @@
 pandas>=2.2
 scikit-learn>=1.5
 
+# Bengali NLP
+bnlp-toolkit>=4.4
+
+# Notebooks
+matplotlib
+ipykernel
+
 # Testing
 pytest>=8.0
+
+# NOTE: bnlp-toolkit depends on gensim, which has no prebuilt wheel for
+# Python 3.14 (building it requires a C++ compiler). This project must use
+# Python 3.11-3.13; the virtual environment is built on Python 3.13.
