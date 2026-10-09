@@ -25,6 +25,10 @@ Bengali Keyword Extractor/
 ├── data/
 │   ├── README.md              # Dataset notes (dataset itself is not committed)
 │   └── bangla_news.csv        # Dataset (add it yourself)
+├── notebooks/
+│   ├── 01_dataset_exploration.ipynb
+│   ├── 02_bengali_preprocessing.ipynb
+│   └── 03_tfidf_keyword_extraction.ipynb
 ├── src/
 │   ├── __init__.py
 │   └── keyword_extraction.py  # Pipeline interface (stubs only)
