@@ -1,19 +1,25 @@
-"""Bangla keyword extraction — project scaffold.
+"""Bangla keyword extraction with a title-weighted TF-IDF model.
 
-This module defines the public interface of the extraction pipeline. Nothing is
-implemented yet: every function is a placeholder that raises
-``NotImplementedError``. Fill in the bodies as the project progresses.
+Public API
+----------
+Preprocessing:
+    :func:`load_dataset`, :func:`clean_text`, :func:`tokenize`,
+    :func:`remove_stopwords`, :func:`preprocess`, :func:`build_document`.
+Extraction:
+    :class:`KeywordExtractor` (fit once on the corpus, reuse for single
+    articles and batches), :func:`extract_keywords` (one article),
+    :func:`extract_keywords_tfidf` (corpus-level ranking).
+Output:
+    :func:`save_results`.
 
-Planned pipeline
-----------------
-``bangla_news.csv``
-    -> :func:`load_dataset`
-    -> :func:`clean_text`
-    -> :func:`tokenize`
-    -> :func:`remove_stopwords`
-    -> :func:`stem_tokens`             (needs a verified Bengali NLP library)
-    -> :func:`extract_keywords_tfidf`
-    -> :func:`save_results`
+Finalised pipeline
+------------------
+``title (repeated x3) + content``
+    -> :func:`clean_text` -> :func:`tokenize` -> :func:`remove_stopwords`
+    -> ``TfidfVectorizer(tokenizer=str.split, max_features=100000)``
+    -> top-k terms by TF-IDF weight.
+
+No stemming, POS filtering or graph ranking is applied.
 """
 
 from __future__ import annotations
@@ -43,12 +49,22 @@ FALLBACK_DATASET_PATH = PROJECT_ROOT / "bangla_news.csv"
 #: Column in ``bangla_news.csv`` that holds the article body.
 DEFAULT_TEXT_COLUMN = "content"
 
+#: Column holding the article headline.
+DEFAULT_TITLE_COLUMN = "title"
+
 #: Intended directory for generated result files.
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 
+#: Title repetition used by the finalised model: the headline is repeated this
+#: many times before the body when building a TF-IDF document.
+DEFAULT_TITLE_WEIGHT = 3
+
+#: Vocabulary cap used by the finalised model.
+DEFAULT_MAX_FEATURES = 100000
+
 
 # ---------------------------------------------------------------------------
-# Function stubs
+# Loading
 # ---------------------------------------------------------------------------
 
 def load_dataset(
@@ -58,9 +74,9 @@ def load_dataset(
 ) -> pd.DataFrame:
     """Load ``bangla_news.csv`` into a pandas DataFrame.
 
-    Intended to read from :data:`DEFAULT_DATASET_PATH`, fall back to
-    :data:`FALLBACK_DATASET_PATH`, validate ``text_column`` and drop blank rows.
-    Not implemented yet.
+    Reads from :data:`DEFAULT_DATASET_PATH`, falls back to
+    :data:`FALLBACK_DATASET_PATH`, validates ``text_column``, drops blank rows,
+    duplicate URLs and the known metadata-only entry.
     """
     if path is None:
         if DEFAULT_DATASET_PATH.exists():
@@ -93,11 +109,16 @@ def load_dataset(
     return df
 
 
+# ---------------------------------------------------------------------------
+# Preprocessing
+# ---------------------------------------------------------------------------
+
 def clean_text(text: str, keep_latin: bool = False) -> str:
     """Clean and normalise a single Bengali text field.
 
-    Intended to remove URLs and HTML, normalise Unicode, and strip punctuation,
-    digits and non-Bengali characters. Not implemented yet.
+    Drops zero-width joiners, removes URLs and HTML, applies Unicode NFC and
+    collapses whitespace. With ``keep_latin=False`` only Bengali-script
+    characters and spaces are kept.
     """
     if not isinstance(text, str):
         return ""
@@ -116,9 +137,9 @@ def clean_text(text: str, keep_latin: bool = False) -> str:
 
 
 def tokenize(text: str) -> list[str]:
-    """Split text into Bengali word tokens.
+    """Split text into Bengali word tokens via bnlp's ``BasicTokenizer``.
 
-    Not implemented yet.
+    Punctuation-only and standalone-numeric tokens are dropped.
     """
     if not isinstance(text, str) or not text.strip():
         return []
@@ -149,7 +170,7 @@ def remove_stopwords(
 ) -> list[str]:
     """Remove stop words from a token sequence.
 
-    Not implemented yet.
+    Defaults to bnlp's Bengali stop-word list (``BengaliCorpus.stopwords``).
     """
     if stopwords is None:
         stopwords = BengaliCorpus.stopwords
@@ -163,9 +184,8 @@ def stem_tokens(
 ) -> list[str]:
     """Apply Bengali stemming to a token sequence.
 
-    Intended to be backed by a verified Bengali NLP library (for example
-    ``bnlp-toolkit`` or ``indic-nlp-library``) rather than hand-written suffix
-    rules. Not implemented yet.
+    No stemmer ships with this project (no verified Bengali method was
+    available), so tokens are returned unchanged unless a caller supplies one.
     """
     if stemmer is None:
         return list(tokens)
@@ -177,10 +197,7 @@ def preprocess(
     stopwords: Iterable[str] | None = None,
     stemmer: Callable[[str], str] | None = None,
 ) -> list[str]:
-    """Run cleaning, tokenisation and stop-word removal on one document.
-
-    Not implemented yet.
-    """
+    """Clean, tokenise and remove stop words from one text field."""
     cleaned = clean_text(text, keep_latin=True)
     tokens = tokenize(cleaned)
     tokens = remove_stopwords(tokens, stopwords)
@@ -191,16 +208,189 @@ def preprocess(
 def build_document(
     title: str,
     text: str,
+    title_weight: int = DEFAULT_TITLE_WEIGHT,
     stopwords: Iterable[str] | None = None,
     stemmer: Callable[[str], str] | None = None,
 ) -> str:
-    """Preprocess one article's title and body into a single TF-IDF document.
+    """Build the TF-IDF document string for one article (title + body).
 
-    The headline carries the most salient terms, so it is included before the
-    body and the result is returned as one space-joined token string ready for
-    :func:`extract_keywords_tfidf`.
+    The headline is repeated ``title_weight`` times before the body, because
+    headline terms are the most salient. ``title_weight=3`` is the finalised
+    model configuration.
     """
-    return " ".join(preprocess(f"{title} {text}", stopwords=stopwords, stemmer=stemmer))
+    if title_weight < 1:
+        raise ValueError("title_weight must be at least 1")
+    title_tokens = preprocess(title, stopwords=stopwords, stemmer=stemmer)
+    body_tokens = preprocess(text, stopwords=stopwords, stemmer=stemmer)
+    return " ".join(title_tokens * title_weight + body_tokens)
+
+
+def _top_keywords(
+    scores, feature_names, top_k: int
+) -> list[tuple[str, float]]:
+    """Rank one TF-IDF score row and return up to ``top_k`` positive terms."""
+    order = scores.argsort()[::-1][:top_k]
+    return [
+        (feature_names[index], float(scores[index]))
+        for index in order
+        if scores[index] > 0
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Keyword extraction
+# ---------------------------------------------------------------------------
+
+class KeywordExtractor:
+    """Title-weighted TF-IDF keyword extractor with a reusable fitted model.
+
+    Fit once on the corpus so that every article is scored with the *same*
+    vocabulary and IDF weights, then call :meth:`extract` per article or
+    :meth:`extract_batch` for a whole DataFrame.
+    """
+
+    def __init__(
+        self,
+        title_weight: int = DEFAULT_TITLE_WEIGHT,
+        max_features: int = DEFAULT_MAX_FEATURES,
+    ) -> None:
+        if title_weight < 1:
+            raise ValueError("title_weight must be at least 1")
+        self.title_weight = title_weight
+        self.max_features = max_features
+        self.vectorizer: TfidfVectorizer | None = None
+        self.feature_names = None
+
+    @property
+    def is_fitted(self) -> bool:
+        """Whether the corpus vectorizer has been fitted."""
+        return self.vectorizer is not None
+
+    def _document(self, title: str, content: str) -> str:
+        return build_document(title, content, title_weight=self.title_weight)
+
+    def fit(self, documents: Sequence[str]) -> "KeywordExtractor":
+        """Fit the TF-IDF vocabulary and IDF weights on a corpus of documents."""
+        if not any(str(doc).strip() for doc in documents):
+            raise ValueError("cannot fit: every document is empty")
+        self.vectorizer = TfidfVectorizer(
+            tokenizer=str.split,
+            preprocessor=None,
+            token_pattern=None,
+            lowercase=False,
+            max_features=self.max_features,
+        )
+        self.vectorizer.fit(documents)
+        self.feature_names = self.vectorizer.get_feature_names_out()
+        return self
+
+    def fit_dataframe(
+        self,
+        df: pd.DataFrame,
+        title_column: str = DEFAULT_TITLE_COLUMN,
+        text_column: str = DEFAULT_TEXT_COLUMN,
+    ) -> "KeywordExtractor":
+        """Fit on a DataFrame of articles (title + content columns)."""
+        documents = [
+            self._document(title, content)
+            for title, content in zip(df[title_column], df[text_column])
+        ]
+        return self.fit(documents)
+
+    def extract(self, title: str, content: str, top_k: int = 10) -> list[tuple[str, float]]:
+        """Return up to ``top_k`` (keyword, score) pairs for ONE article.
+
+        Uses the corpus vocabulary/IDF from :meth:`fit`; terms unseen in the
+        corpus are ignored. Empty titles/bodies are allowed (the empty field
+        simply contributes no tokens); a fully empty article returns ``[]``.
+        """
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+        if not self.is_fitted:
+            raise RuntimeError("fit() the extractor before calling extract()")
+        row = self.vectorizer.transform([self._document(title, content)])
+        return _top_keywords(row.toarray().ravel(), self.feature_names, top_k)
+
+    def extract_batch(
+        self,
+        df: pd.DataFrame,
+        top_k: int = 10,
+        title_column: str = DEFAULT_TITLE_COLUMN,
+        text_column: str = DEFAULT_TEXT_COLUMN,
+    ) -> list[list[tuple[str, float]]]:
+        """Extract keywords for every row of a DataFrame.
+
+        Uses the same fitted model and ranking routine as :meth:`extract`, so
+        batch and single-article results are identical.
+        """
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+        if not self.is_fitted:
+            raise RuntimeError("fit() the extractor before calling extract_batch()")
+        documents = [
+            self._document(title, content)
+            for title, content in zip(df[title_column], df[text_column])
+        ]
+        matrix = self.vectorizer.transform(documents)
+        return [
+            _top_keywords(matrix[i].toarray().ravel(), self.feature_names, top_k)
+            for i in range(matrix.shape[0])
+        ]
+
+    def extract_batch_dataframe(
+        self,
+        df: pd.DataFrame,
+        top_k: int = 10,
+        title_column: str = DEFAULT_TITLE_COLUMN,
+        text_column: str = DEFAULT_TEXT_COLUMN,
+    ) -> pd.DataFrame:
+        """Batch extraction as a results table (matches ``output/keywords.csv``).
+
+        Columns: ``title, category, url, keywords, keyword_scores`` (the latter
+        two only when the corresponding source columns exist).
+        """
+        keywords = self.extract_batch(
+            df, top_k=top_k, title_column=title_column, text_column=text_column
+        )
+        table: dict[str, list] = {"title": list(df[title_column])}
+        if "category" in df.columns:
+            table["category"] = list(df["category"])
+        if "url" in df.columns:
+            table["url"] = list(df["url"])
+        table["keywords"] = [", ".join(w for w, _ in row) for row in keywords]
+        table["keyword_scores"] = [
+            "; ".join(f"{w}:{s:.4f}" for w, s in row) for row in keywords
+        ]
+        return pd.DataFrame(table)
+
+
+def extract_keywords(
+    title: str,
+    content: str,
+    top_k: int = 10,
+    extractor: KeywordExtractor | None = None,
+) -> list[tuple[str, float]]:
+    """Return the top ``top_k`` (keyword, score) pairs for a single article.
+
+    For the finalised model, pass a corpus-fitted :class:`KeywordExtractor` so
+    the article is scored with the corpus vocabulary and IDF weights::
+
+        extractor = KeywordExtractor().fit_dataframe(corpus)
+        extract_keywords(title, content, top_k=10, extractor=extractor)
+
+    If ``extractor`` is omitted, a vectorizer is fitted on **this article
+    alone**. That is a documented convenience only: with a single document every
+    IDF weight collapses to 1, so the ranking degenerates to term frequency and
+    is *not* equivalent to the corpus model.
+    """
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1")
+    if extractor is None:
+        document = build_document(title, content)
+        if not document.split():
+            return []
+        extractor = KeywordExtractor().fit([document])
+    return extractor.extract(title, content, top_k)
 
 
 def extract_keywords_tfidf(
@@ -210,8 +400,9 @@ def extract_keywords_tfidf(
 ) -> list[list[tuple[str, float]]]:
     """Rank the top ``top_n`` keywords per document using TF-IDF.
 
-    Intended to use ``sklearn.feature_extraction.text.TfidfVectorizer``.
-    Not implemented yet.
+    Corpus-level helper: fits one ``TfidfVectorizer`` on ``documents`` (already
+    preprocessed, space-joined strings) and ranks each row. Kept for batch use;
+    :class:`KeywordExtractor` is the reusable equivalent.
     """
     if top_n < 1:
         raise ValueError("top_n must be at least 1")
@@ -229,14 +420,7 @@ def extract_keywords_tfidf(
     results = []
     for row_index in range(tfidf_matrix.shape[0]):
         scores = tfidf_matrix[row_index].toarray().flatten()
-        # Sort terms by TF-IDF score, highest first
-        top_indices = scores.argsort()[::-1][:top_n]
-        keywords = [
-            (feature_names[index], float(scores[index]))
-            for index in top_indices
-            if scores[index] > 0
-        ]
-        results.append(keywords)
+        results.append(_top_keywords(scores, feature_names, top_n))
 
     return results
 
@@ -247,7 +431,7 @@ def save_results(
 ) -> Path:
     """Write a results table (e.g. keywords with scores) to CSV.
 
-    Not implemented yet.
+    Creates parent directories if needed; UTF-8 with BOM for Excel.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

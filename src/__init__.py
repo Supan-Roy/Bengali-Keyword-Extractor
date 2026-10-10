@@ -1,8 +1,10 @@
 """Bangla keyword extractor source package."""
 
 from .keyword_extraction import (
+    KeywordExtractor,
     build_document,
     clean_text,
+    extract_keywords,
     extract_keywords_tfidf,
     load_dataset,
     preprocess,
@@ -13,8 +15,10 @@ from .keyword_extraction import (
 )
 
 __all__ = [
+    "KeywordExtractor",
     "build_document",
     "clean_text",
+    "extract_keywords",
     "extract_keywords_tfidf",
     "load_dataset",
     "preprocess",
