@@ -93,3 +93,14 @@ def test_save_results_writes_utf8_bom_csv_and_creates_directories(tmp_path):
     assert output_path.exists()
     assert output_path.read_bytes()[:3] == b"\xef\xbb\xbf"
     assert "নদী" in output_path.read_text(encoding="utf-8-sig")
+
+
+def test_clean_text_strips_zero_width_joiners():
+    assert ke.clean_text("র\u200c্যাংকিং", keep_latin=True) == "র্যাংকিং"
+
+
+def test_build_document_includes_title_terms_before_body():
+    tokens = ke.build_document("ক্রিকেট বিশ্বকাপ", "আজ শুরু হলো বিশ্বকাপ").split()
+    assert "ক্রিকেট" in tokens
+    assert "বিশ্বকাপ" in tokens
+    assert tokens.index("ক্রিকেট") < tokens.index("বিশ্বকাপ")

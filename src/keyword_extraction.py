@@ -103,6 +103,9 @@ def clean_text(text: str, keep_latin: bool = False) -> str:
         return ""
 
     text = unicodedata.normalize("NFC", text)
+    # Drop zero-width joiners/non-joiners (used to render conjuncts) so they
+    # cannot split or pollute tokens; NFC alone leaves them in place.
+    text = text.replace("\u200c", "").replace("\u200d", "")
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"https?://\S+|www\.\S+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -183,6 +186,21 @@ def preprocess(
     tokens = remove_stopwords(tokens, stopwords)
     tokens = stem_tokens(tokens, stemmer)
     return tokens
+
+
+def build_document(
+    title: str,
+    text: str,
+    stopwords: Iterable[str] | None = None,
+    stemmer: Callable[[str], str] | None = None,
+) -> str:
+    """Preprocess one article's title and body into a single TF-IDF document.
+
+    The headline carries the most salient terms, so it is included before the
+    body and the result is returned as one space-joined token string ready for
+    :func:`extract_keywords_tfidf`.
+    """
+    return " ".join(preprocess(f"{title} {text}", stopwords=stopwords, stemmer=stemmer))
 
 
 def extract_keywords_tfidf(
