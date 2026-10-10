@@ -66,25 +66,53 @@ Fit the extractor once on the corpus, then reuse it — this is what gives every
 article the **same vocabulary and IDF weights** as the corpus model.
 
 ```python
-from src.keyword_extraction import KeywordExtractor, load_dataset
+from src.keyword_extraction import KeywordExtractor, extract_keywords, load_dataset
 
-df = load_dataset()                      # 11,844 cleaned articles
+df = load_dataset()                                # 11,844 cleaned articles
 extractor = KeywordExtractor().fit_dataframe(df)   # title ×3 + content
 
-keywords = extractor.extract(
+# (a) title + content — the finalised model (headline repeated ×3)
+keywords = extract_keywords(
     title="সিন নদীতে ব্যাপক দূষণ, স্থগিত করা হলো ট্রায়াথলন ইভেন্ট",
     content="...article body...",
     top_k=10,
+    extractor=extractor,
 )
+
+# (b) content only — a blank/omitted title adds no title tokens
+keywords = extract_keywords(
+    content="...article body...",
+    top_k=10,
+    extractor=extractor,
+)
+
+# (c) title only — blank content
+keywords = extract_keywords(
+    title="সিন নদীতে ব্যাপক দূষণ",
+    content="",
+    top_k=10,
+    extractor=extractor,
+)
+
 for word, score in keywords:
     print(f"{word}\t{score:.4f}")
 ```
 
-Convenience function `extract_keywords(title, content, top_k=10, extractor=None)`
-wraps the same call. **Pass the fitted `extractor`.** If you omit it, a
-vectorizer is fitted on that one article only; with a single document every IDF
-weight collapses to 1, so the ranking degenerates to term frequency and is
-**not** equivalent to the corpus model (this is documented, not accidental).
+`extractor.extract(title, content, top_k=10)` is the equivalent method, and
+`extractor.extract_batch(df)` applies the same rules to every row.
+
+Blank-input rules (`None`, `""` or whitespace are all equivalent):
+
+| title | content | result |
+| --- | --- | --- |
+| present | present | title repeated ×3 before the body |
+| blank | present | keywords from the content alone |
+| present | blank | keywords from the title alone |
+| blank | blank | `[]` |
+
+If `extractor` is omitted, `extract_keywords` uses a default extractor that is
+fitted **once** on the shipped dataset and cached for the process, so a
+vectorizer is never refitted per request.
 
 ### Batch / CSV processing
 
@@ -161,9 +189,10 @@ Limitations to keep in mind:
 pytest
 ```
 
-34 tests cover the preprocessing helpers (cleaning, tokenisation, stop-word
+40 tests cover the preprocessing helpers (cleaning, tokenisation, stop-word
 removal, document building) and the public extraction API (single-article
-ranking, empty/invalid inputs, unseen terms, and single-vs-batch consistency).
+ranking, optional/blank titles, empty and invalid inputs, unseen terms, cached
+default extractor, and single-vs-batch consistency).
 
 ## Dependencies
 

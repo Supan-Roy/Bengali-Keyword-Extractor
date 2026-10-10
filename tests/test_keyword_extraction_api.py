@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+import src.keyword_extraction as ke
 from src.keyword_extraction import (
     KeywordExtractor,
     build_document,
@@ -109,14 +110,81 @@ def test_extract_keywords_with_corpus_extractor_matches_extractor():
         extractor.extract(title, content, top_k=5)
 
 
-def test_extract_keywords_without_extractor_uses_single_document():
-    result = extract_keywords("ক্রিকেট বিশ্বকাপ", "ক্রিকেট বিশ্বকাপ আজ শুরু", top_k=5)
-    assert result
-    assert result[0][0] in {"ক্রিকেট", "বিশ্বকাপ"}
-
-
-def test_extract_keywords_with_empty_article_returns_empty():
+def test_extract_keywords_blank_inputs_return_empty():
     assert extract_keywords("", "", top_k=5) == []
+    assert extract_keywords(None, "   ", top_k=5) == []
+    assert extract_keywords(top_k=5) == []      # both omitted; no extractor needed
+
+
+def test_default_extractor_is_fitted_once_and_reused(monkeypatch):
+    stub = KeywordExtractor().fit_dataframe(CORPUS)
+    monkeypatch.setattr(ke, "_DEFAULT_EXTRACTOR", stub)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("default extractor must not be refitted per request")
+
+    monkeypatch.setattr(ke, "load_dataset", _boom)
+    assert ke.extract_keywords("ক্রিকেট বিশ্বকাপ", "ক্রিকেট বিশ্বকাপ আজ শুরু", top_k=5)
+    assert ke.extract_keywords(content="নদীর পানি দূষণ", top_k=5)
+
+
+# --------------------------------------------------------------------------
+# optional / blank title
+# --------------------------------------------------------------------------
+
+def test_blank_title_adds_no_title_tokens():
+    extractor = _fitted()
+    content = CORPUS.loc[1, "content"]           # নদীর পানি দূষণ বেড়েছে
+    for blank in (None, "", "   "):
+        words = _names(extractor.extract(blank, content, top_k=5))
+        assert words
+        assert "ক্রিকেট" not in words and "বিশ্বকাপ" not in words
+
+
+def test_blank_title_variants_are_equivalent():
+    extractor = _fitted()
+    content = CORPUS.loc[0, "content"]
+    assert (
+        extractor.extract(None, content, top_k=5)
+        == extractor.extract("", content, top_k=5)
+        == extractor.extract("   ", content, top_k=5)
+    )
+
+
+def test_title_only_extraction_when_content_blank():
+    extractor = _fitted()
+    for blank in (None, "", "   "):
+        words = _names(extractor.extract("ক্রিকেট বিশ্বকাপ", blank, top_k=5))
+        assert "ক্রিকেট" in words
+
+
+def test_both_blank_returns_empty():
+    extractor = _fitted()
+    assert extractor.extract("", "", top_k=5) == []
+    assert extractor.extract(None, "   ", top_k=5) == []
+    assert extract_keywords(None, None, top_k=5, extractor=extractor) == []
+
+
+def test_title_plus_content_behaviour_is_preserved():
+    extractor = _fitted()
+    title, content = "ক্রিকেট বিশ্বকাপ", CORPUS.loc[0, "content"]
+    assert extractor.extract(title, content, top_k=5) == \
+        extractor.extract(title=title, content=content, top_k=5)
+    # title weighting still applied when a title is given (content has no "ক্রিকেট")
+    assert build_document(title, CORPUS.loc[1, "content"]).split().count("ক্রিকেট") == 3
+
+
+def test_batch_falls_back_to_content_for_blank_titles():
+    df = CORPUS.copy()
+    df.loc[0, "title"] = ""
+    extractor = KeywordExtractor().fit_dataframe(df)
+    batch = extractor.extract_batch(df, top_k=5)
+    singles = [
+        extractor.extract(row["title"], row["content"], top_k=5)
+        for _, row in df.iterrows()
+    ]
+    assert [_names(r) for r in batch] == [_names(r) for r in singles]
+    assert batch[0]
 
 
 # --------------------------------------------------------------------------

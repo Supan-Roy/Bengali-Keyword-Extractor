@@ -206,8 +206,8 @@ def preprocess(
 
 
 def build_document(
-    title: str,
-    text: str,
+    title: str | None,
+    text: str | None,
     title_weight: int = DEFAULT_TITLE_WEIGHT,
     stopwords: Iterable[str] | None = None,
     stemmer: Callable[[str], str] | None = None,
@@ -217,6 +217,11 @@ def build_document(
     The headline is repeated ``title_weight`` times before the body, because
     headline terms are the most salient. ``title_weight=3`` is the finalised
     model configuration.
+
+    ``title`` and ``text`` may be ``None``, empty or whitespace-only. A blank
+    title contributes **no** title tokens, so the document is built from the body
+    alone (and vice-versa when the body is blank); if both are blank the document
+    is an empty string.
     """
     if title_weight < 1:
         raise ValueError("title_weight must be at least 1")
@@ -297,12 +302,21 @@ class KeywordExtractor:
         ]
         return self.fit(documents)
 
-    def extract(self, title: str, content: str, top_k: int = 10) -> list[tuple[str, float]]:
+    def extract(
+        self,
+        title: str | None = None,
+        content: str = "",
+        top_k: int = 10,
+    ) -> list[tuple[str, float]]:
         """Return up to ``top_k`` (keyword, score) pairs for ONE article.
 
         Uses the corpus vocabulary/IDF from :meth:`fit`; terms unseen in the
-        corpus are ignored. Empty titles/bodies are allowed (the empty field
-        simply contributes no tokens); a fully empty article returns ``[]``.
+        corpus are ignored.
+
+        ``title`` may be ``None``, blank or whitespace-only, in which case no
+        title tokens are added and keywords come from ``content`` alone. A blank
+        ``content`` with a title extracts from the title alone; both blank
+        returns ``[]``.
         """
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
@@ -321,7 +335,8 @@ class KeywordExtractor:
         """Extract keywords for every row of a DataFrame.
 
         Uses the same fitted model and ranking routine as :meth:`extract`, so
-        batch and single-article results are identical.
+        batch and single-article results are identical. Rows whose title is
+        blank fall back to their content alone, exactly as :meth:`extract` does.
         """
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
@@ -364,32 +379,60 @@ class KeywordExtractor:
         return pd.DataFrame(table)
 
 
+def _has_text(value: object) -> bool:
+    """True when ``value`` is a string containing something other than spaces."""
+    return isinstance(value, str) and value.strip() != ""
+
+
+#: Process-wide default extractor, fitted once on the shipped dataset and reused.
+_DEFAULT_EXTRACTOR: "KeywordExtractor | None" = None
+
+
+def _get_default_extractor() -> "KeywordExtractor":
+    """Return the default extractor, fitting it once on the shipped dataset.
+
+    Built lazily on first use and cached for the process, so individual requests
+    reuse the same vocabulary and IDF weights instead of refitting a vectorizer.
+    """
+    global _DEFAULT_EXTRACTOR
+    if _DEFAULT_EXTRACTOR is None:
+        _DEFAULT_EXTRACTOR = KeywordExtractor().fit_dataframe(load_dataset())
+    return _DEFAULT_EXTRACTOR
+
+
 def extract_keywords(
-    title: str,
-    content: str,
+    title: str | None = None,
+    content: str = "",
     top_k: int = 10,
     extractor: KeywordExtractor | None = None,
 ) -> list[tuple[str, float]]:
     """Return the top ``top_k`` (keyword, score) pairs for a single article.
 
-    For the finalised model, pass a corpus-fitted :class:`KeywordExtractor` so
-    the article is scored with the corpus vocabulary and IDF weights::
+    ``title`` is **optional**. Pass ``None``, ``""`` or whitespace to extract
+    from the body alone (no title tokens are added). When a title is present the
+    finalised model repeats it ``DEFAULT_TITLE_WEIGHT`` (3) times before the
+    body::
 
-        extractor = KeywordExtractor().fit_dataframe(corpus)
+        extractor = KeywordExtractor().fit_dataframe(load_dataset())
+
+        # title + content (finalised title x3 model)
         extract_keywords(title, content, top_k=10, extractor=extractor)
 
-    If ``extractor`` is omitted, a vectorizer is fitted on **this article
-    alone**. That is a documented convenience only: with a single document every
-    IDF weight collapses to 1, so the ranking degenerates to term frequency and
-    is *not* equivalent to the corpus model.
+        # content only -- omit/blank the title
+        extract_keywords(content=content, top_k=10, extractor=extractor)
+
+    ``extractor`` should be a corpus-fitted :class:`KeywordExtractor`. When it is
+    omitted, a default extractor fitted once on the shipped dataset is used
+    (cached for the process), so no vectorizer is refitted per request.
+
+    Returns an empty list when both ``title`` and ``content`` are blank.
     """
     if top_k < 1:
         raise ValueError("top_k must be at least 1")
+    if not _has_text(title) and not _has_text(content):
+        return []
     if extractor is None:
-        document = build_document(title, content)
-        if not document.split():
-            return []
-        extractor = KeywordExtractor().fit([document])
+        extractor = _get_default_extractor()
     return extractor.extract(title, content, top_k)
 
 
