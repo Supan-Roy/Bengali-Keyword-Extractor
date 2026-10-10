@@ -1,27 +1,11 @@
-"""Initial tests for the keyword-extraction scaffold.
+"""Tests for the Bengali keyword-extraction pipeline."""
 
-Covers the implemented preprocessing helpers (``load_dataset``, ``clean_text``,
-``tokenize``, ``remove_stopwords``, ``stem_tokens``, ``preprocess``). The
-remaining functions are still stubs and are checked to report themselves as
-unimplemented.
-"""
-
+import pandas as pd
 import pytest
 
 from bnlp import BengaliCorpus
 
 from src import keyword_extraction as ke
-
-PLACEHOLDERS = [
-    ke.extract_keywords_tfidf,
-    ke.save_results,
-]
-
-
-@pytest.mark.parametrize("func", PLACEHOLDERS, ids=lambda func: func.__name__)
-def test_placeholder_is_not_implemented(func):
-    with pytest.raises(NotImplementedError):
-        func("বাংলা")
 
 
 def test_clean_text_removes_html_and_urls():
@@ -79,3 +63,33 @@ def test_preprocess_runs_full_pipeline():
 def test_preprocess_applies_stemmer_when_supplied():
     result = ke.preprocess("খেলার", stopwords=set(), stemmer=lambda t: t.rstrip("র"))
     assert result == ["খেলা"]
+
+
+def test_extract_keywords_tfidf_ranks_terms_and_returns_top_n():
+    documents = [
+        "নদী দূষণ নদী পানি",
+        "ক্রিকেট ক্রিকেট খেলা দল",
+    ]
+    results = ke.extract_keywords_tfidf(documents, top_n=2)
+    assert len(results) == 2
+    assert len(results[0]) == 2
+    assert results[0][0][0] == "নদী"
+    assert results[1][0][0] == "ক্রিকেট"
+
+
+def test_extract_keywords_tfidf_rejects_non_positive_top_n():
+    with pytest.raises(ValueError):
+        ke.extract_keywords_tfidf(["নদী পানি"], top_n=0)
+
+
+def test_extract_keywords_tfidf_empty_document_has_no_keywords():
+    results = ke.extract_keywords_tfidf(["", "নদী পানি"], top_n=5)
+    assert results[0] == []
+
+
+def test_save_results_writes_utf8_bom_csv_and_creates_directories(tmp_path):
+    df = pd.DataFrame({"keyword": ["নদী"], "score": [0.5]})
+    output_path = ke.save_results(df, tmp_path / "nested" / "keywords.csv")
+    assert output_path.exists()
+    assert output_path.read_bytes()[:3] == b"\xef\xbb\xbf"
+    assert "নদী" in output_path.read_text(encoding="utf-8-sig")

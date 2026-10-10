@@ -195,7 +195,32 @@ def extract_keywords_tfidf(
     Intended to use ``sklearn.feature_extraction.text.TfidfVectorizer``.
     Not implemented yet.
     """
-    raise NotImplementedError
+    if top_n < 1:
+        raise ValueError("top_n must be at least 1")
+
+    vectorizer = TfidfVectorizer(
+        tokenizer=str.split,
+        preprocessor=None,
+        token_pattern=None,
+        lowercase=False,
+        **vectorizer_kwargs,
+    )
+    tfidf_matrix = vectorizer.fit_transform(documents)
+    feature_names = vectorizer.get_feature_names_out()
+
+    results = []
+    for row_index in range(tfidf_matrix.shape[0]):
+        scores = tfidf_matrix[row_index].toarray().flatten()
+        # Sort terms by TF-IDF score, highest first
+        top_indices = scores.argsort()[::-1][:top_n]
+        keywords = [
+            (feature_names[index], float(scores[index]))
+            for index in top_indices
+            if scores[index] > 0
+        ]
+        results.append(keywords)
+
+    return results
 
 
 def save_results(
@@ -206,4 +231,11 @@ def save_results(
 
     Not implemented yet.
     """
-    raise NotImplementedError
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    results.to_csv(
+        output_path,
+        index=False,
+        encoding="utf-8-sig",
+    )
+    return output_path

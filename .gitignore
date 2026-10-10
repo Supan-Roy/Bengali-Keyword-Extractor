@@ -38,7 +38,3 @@ Thumbs.db
 
 # Logs
 *.log
-
-# Generated outputs (keep the folder itself, ignore its contents)
-output/*
-!output/.gitkeep
