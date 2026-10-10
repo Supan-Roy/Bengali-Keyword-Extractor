@@ -23,6 +23,12 @@ from typing import Callable, Iterable, Sequence
 
 import pandas as pd
 
+import re
+import unicodedata
+
+from bnlp import BasicTokenizer, BengaliCorpus
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 # ---------------------------------------------------------------------------
 # Paths and defaults
 # ---------------------------------------------------------------------------
@@ -56,7 +62,35 @@ def load_dataset(
     :data:`FALLBACK_DATASET_PATH`, validate ``text_column`` and drop blank rows.
     Not implemented yet.
     """
-    raise NotImplementedError
+    if path is None:
+        if DEFAULT_DATASET_PATH.exists():
+            path = DEFAULT_DATASET_PATH
+        elif FALLBACK_DATASET_PATH.exists():
+            path = FALLBACK_DATASET_PATH
+        else:
+            raise FileNotFoundError(
+                f"Dataset not found: {DEFAULT_DATASET_PATH}"
+            )
+    path = Path(path)
+    df = pd.read_csv(path, encoding=encoding)
+    if text_column not in df.columns:
+        raise ValueError(
+            f"Column '{text_column}' not found. "
+            f"Available columns: {list(df.columns)}"
+        )
+    df[text_column] = (
+        df[text_column]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    df = df[df[text_column] != ""].copy()
+    if "url" in df.columns:
+        df = df.drop_duplicates(subset="url", keep="first")
+    df = df[
+        ~df[text_column].isin({"আল মাহফুজ"})
+    ].copy()
+    return df
 
 
 def clean_text(text: str, keep_latin: bool = False) -> str:
@@ -65,7 +99,17 @@ def clean_text(text: str, keep_latin: bool = False) -> str:
     Intended to remove URLs and HTML, normalise Unicode, and strip punctuation,
     digits and non-Bengali characters. Not implemented yet.
     """
-    raise NotImplementedError
+    if not isinstance(text, str):
+        return ""
+
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"https?://\S+|www\.\S+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if keep_latin:
+        return text
+    return re.sub(r"[^\u0980-\u09FF\s]", " ", text).strip()
 
 
 def tokenize(text: str) -> list[str]:
@@ -73,7 +117,27 @@ def tokenize(text: str) -> list[str]:
 
     Not implemented yet.
     """
-    raise NotImplementedError
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    tokenizer = BasicTokenizer()
+    tokens = tokenizer(text)
+
+    cleaned_tokens = []
+    for token in tokens:
+        # Remove punctuation-only tokens
+        if all(
+            not char.isalnum()
+            and not ("\u0980" <= char <= "\u09FF")
+            for char in token
+        ):
+            continue
+        # Remove standalone numeric tokens
+        if re.fullmatch(r"\d+", token):
+            continue
+        cleaned_tokens.append(token)
+
+    return cleaned_tokens
 
 
 def remove_stopwords(
@@ -84,7 +148,10 @@ def remove_stopwords(
 
     Not implemented yet.
     """
-    raise NotImplementedError
+    if stopwords is None:
+        stopwords = BengaliCorpus.stopwords
+    stopword_set = set(stopwords)
+    return [token for token in tokens if token not in stopword_set]
 
 
 def stem_tokens(
@@ -97,7 +164,9 @@ def stem_tokens(
     ``bnlp-toolkit`` or ``indic-nlp-library``) rather than hand-written suffix
     rules. Not implemented yet.
     """
-    raise NotImplementedError
+    if stemmer is None:
+        return list(tokens)
+    return [stemmer(token) for token in tokens]
 
 
 def preprocess(
@@ -109,7 +178,11 @@ def preprocess(
 
     Not implemented yet.
     """
-    raise NotImplementedError
+    cleaned = clean_text(text, keep_latin=True)
+    tokens = tokenize(cleaned)
+    tokens = remove_stopwords(tokens, stopwords)
+    tokens = stem_tokens(tokens, stemmer)
+    return tokens
 
 
 def extract_keywords_tfidf(
